@@ -380,13 +380,11 @@
     <div class="game-wrapper" id="gameWrapper">
         <div class="game-container" id="gameContainer">
             <canvas id="boardCanvas" width="550" height="610"></canvas>
-            <!-- 走法提示层，不拦截触摸 -->
             <div id="hints-layer"></div>
             <div id="pieces-layer"></div>
         </div>
     </div>
 
-    <!-- 弹窗 -->
     <div id="modal-overlay">
         <div class="modal-box">
             <div class="modal-title" id="modal-title">恭喜过关！</div>
@@ -408,7 +406,6 @@
         'K': 10000, 'R': 900, 'C': 450, 'N': 420, 'B': 200, 'A': 200, 'P': 100
     };
 
-    // 走法规则说明（用于教学提示）
     const pieceRules = {
         'K': '将/帅：只能在九宫格内直走或横走一步，不可斜走。',
         'R': '车：走直线，步数不限，遇子可吃，威力最大。',
@@ -427,13 +424,70 @@
     let currentLevel = 1;
     let searchDepth = 2;
     let aiNoise = 0;
-
-    // 教学提示开关：1-3关自动开启
     let showTeachingHints = true;
 
     let modalCallback = null;
 
-    // --- 响应式缩放 ---
+    // ---- 音频相关 ----
+    let audioCtx = null;
+
+    // 初始化音频上下文（必须在用户手势中调用）
+    function ensureAudioContext() {
+        if (audioCtx) {
+            // 如果上下文存在但被挂起，尝试恢复
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            return;
+        }
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioContext();
+            // 有些浏览器即使新建也可能处于suspended，主动resume
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        } catch (e) {
+            console.warn('无法创建音频上下文', e);
+        }
+    }
+
+    function playSound(isCapture) {
+        if (!audioCtx) return;
+        // 确保上下文未挂起（有些浏览器在每次播放前需检查）
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+
+        try {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+
+            if (isCapture) {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.15);
+                gain.gain.setValueAtTime(0.7, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+            } else {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            }
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.2);
+        } catch (e) {
+            // 静默处理音频播放失败
+        }
+    }
+
+    // ---- 响应式缩放 ----
     function calculateScale() {
         const gameContainer = document.getElementById('gameContainer');
         const gameWrapper = document.getElementById('gameWrapper');
@@ -465,37 +519,6 @@
     function handleResize() {
         calculateScale();
         drawBoard();
-    }
-
-    // --- 音效 ---
-    function playSound(isCapture) {
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (!window.audioCtx) window.audioCtx = new AudioContext();
-            if (window.audioCtx.state === 'suspended') window.audioCtx.resume();
-
-            const osc = window.audioCtx.createOscillator();
-            const gain = window.audioCtx.createGain();
-
-            if (isCapture) {
-                osc.type = 'triangle';
-                osc.frequency.setValueAtTime(800, window.audioCtx.currentTime);
-                osc.frequency.exponentialRampToValueAtTime(100, window.audioCtx.currentTime + 0.15);
-                gain.gain.setValueAtTime(0.7, window.audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, window.audioCtx.currentTime + 0.15);
-            } else {
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(500, window.audioCtx.currentTime);
-                osc.frequency.exponentialRampToValueAtTime(150, window.audioCtx.currentTime + 0.1);
-                gain.gain.setValueAtTime(0.5, window.audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, window.audioCtx.currentTime + 0.1);
-            }
-
-            osc.connect(gain);
-            gain.connect(window.audioCtx.destination);
-            osc.start();
-            osc.stop(window.audioCtx.currentTime + 0.2);
-        } catch (e) {}
     }
 
     // 绘制棋盘
@@ -595,18 +618,15 @@
 
     // 清除走法提示
     function clearMoveHints() {
-        const hintsLayer = document.getElementById('hints-layer');
-        hintsLayer.innerHTML = '';
+        document.getElementById('hints-layer').innerHTML = '';
     }
 
-    // 显示走法提示（高亮所有合法目标）
+    // 显示走法提示
     function showMoveHints(x, y) {
         clearMoveHints();
         if (!showTeachingHints) return;
-
         const moves = getValidMoves(board, x, y);
         const hintsLayer = document.getElementById('hints-layer');
-
         moves.forEach(m => {
             const dot = document.createElement('div');
             dot.className = 'move-hint';
@@ -616,10 +636,9 @@
         });
     }
 
-    // 更新状态栏走法说明
     function updateStatusWithRule(pieceCode) {
         if (!pieceCode) {
-            document.getElementById('status').innerText = '♟️ 请你走棋。点击红方棋子显示走法提示。';
+            resetStatusText();
             return;
         }
         const name = pieceNames[pieceCode] || pieceCode;
@@ -628,7 +647,6 @@
         document.getElementById('status').innerText = `📘 ${name}：${rule}`;
     }
 
-    // 重置状态栏
     function resetStatusText() {
         if (!gameActive) return;
         if (currentPlayer === 'red') {
@@ -660,6 +678,8 @@
                     div.addEventListener('pointerdown', function(e) {
                         e.preventDefault();
                         e.stopPropagation();
+                        // 关键：在用户手势中初始化音频上下文
+                        ensureAudioContext();
                         handleSquareClick(x, y);
                     });
                     div.addEventListener('click', function(e) {
@@ -671,7 +691,7 @@
             }
         }
 
-        // 空白区域点击处理
+        // 空白区域点击
         layer.onpointerdown = function(e) {
             if (e.target === layer && selectedCell) {
                 const rect = layer.getBoundingClientRect();
@@ -682,6 +702,7 @@
                 const x = Math.round((clickX / scaleX - OFFSET) / CELL_SIZE);
                 const y = Math.round((clickY / scaleY - OFFSET) / CELL_SIZE);
                 if (x >= 0 && x < 9 && y >= 0 && y < 10) {
+                    ensureAudioContext();
                     handleSquareClick(x, y);
                 }
             }
@@ -696,18 +717,18 @@
                 const x = Math.round((clickX / scaleX - OFFSET) / CELL_SIZE);
                 const y = Math.round((clickY / scaleY - OFFSET) / CELL_SIZE);
                 if (x >= 0 && x < 9 && y >= 0 && y < 10) {
+                    ensureAudioContext();
                     handleSquareClick(x, y);
                 }
             }
         };
 
-        // 如果当前有选中的棋子且开启了教学提示，重新显示走法提示
         if (selectedCell && showTeachingHints && gameActive && currentPlayer === 'red') {
             showMoveHints(selectedCell.x, selectedCell.y);
         }
     }
 
-    // --- 关卡与流程 ---
+    // ---- 关卡与流程 ----
     function loadProgress() {
         let saved = localStorage.getItem('xiangqi_level_v2');
         if (saved) {
@@ -726,14 +747,10 @@
 
     function updateDifficulty() {
         document.getElementById('levelDisplay').innerText = `第 ${currentLevel} 关 (共20关)`;
-
         if (currentLevel <= 3) searchDepth = 2;
         else if (currentLevel <= 12) searchDepth = 3;
         else searchDepth = 4;
-
         aiNoise = Math.max(0, (20 - currentLevel) * 40);
-
-        // 1-3关开启教学提示
         showTeachingHints = (currentLevel <= 3);
     }
 
@@ -817,7 +834,7 @@
         showModal(`💪 挑战失败`, `第 ${currentLevel} 关未能通过，再接再厉！`, '再试一次', startGame);
     }
 
-    // --- 交互与移动 ---
+    // ---- 交互与移动 ----
     function handleSquareClick(x, y) {
         if (!gameActive || currentPlayer !== 'red') return;
 
@@ -826,7 +843,6 @@
 
         if (selectedCell) {
             if (isRed) {
-                // 更换选中
                 selectedCell = { x, y };
                 clearMoveHints();
                 if (showTeachingHints) showMoveHints(x, y);
@@ -838,7 +854,6 @@
                 if (isValid) {
                     executeMove(selectedCell.x, selectedCell.y, x, y);
                 } else {
-                    // 无效移动：如果是教学关卡，给出提示
                     if (showTeachingHints && !piece) {
                         document.getElementById('status').innerText = '⛔ 该位置不能到达，请重新选择目标。';
                         setTimeout(resetStatusText, 1500);
@@ -871,6 +886,7 @@
         clearMoveHints();
         renderPieces();
 
+        // 播放音效 (此时音频上下文已经由用户手势激活)
         playSound(isCapture);
 
         if (target === 'bK') {
@@ -894,7 +910,7 @@
         }
     }
 
-    // --- 规则引擎 ---
+    // ---- 规则引擎 ----
     function getValidMoves(state, x, y) {
         const piece = state[y][x];
         if (!piece) return [];
@@ -1002,7 +1018,7 @@
         return all;
     }
 
-    // --- AI ---
+    // ---- AI ----
     function evaluateBoard(state) {
         let score = 0;
         for(let y=0; y<10; y++) {
@@ -1104,7 +1120,7 @@
         }
     }
 
-    // --- 窗口事件 ---
+    // ---- 窗口事件 ----
     let resizeDebounce = null;
     window.addEventListener('resize', function() {
         if (resizeDebounce) clearTimeout(resizeDebounce);
@@ -1132,6 +1148,11 @@
             e.preventDefault();
             resetCurrentLevel();
         }
+    });
+
+    // 顶部按钮也需要激活音频上下文（用户点击它们时）
+    document.querySelectorAll('button.action-btn').forEach(btn => {
+        btn.addEventListener('pointerdown', ensureAudioContext);
     });
 </script>
 </body>
