@@ -428,60 +428,93 @@
 
     let modalCallback = null;
 
-    // ---- 音频相关 ----
+    // ---- 音频相关 (移动端全面修复版) ----
     let audioCtx = null;
+    let audioUnlocked = false;
 
-    // 初始化音频上下文（必须在用户手势中调用）
-    function ensureAudioContext() {
-        if (audioCtx) {
-            // 如果上下文存在但被挂起，尝试恢复
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
-            }
-            return;
-        }
+    // 获取/创建音频上下文
+    function getAudioContext() {
+        if (audioCtx) return audioCtx;
         try {
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             audioCtx = new AudioContext();
-            // 有些浏览器即使新建也可能处于suspended，主动resume
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
-            }
         } catch (e) {
             console.warn('无法创建音频上下文', e);
         }
+        return audioCtx;
     }
 
+    // 核心修复：通过静音缓冲强制解锁移动端（尤其是 iOS）的 AudioContext
+    function unlockAudio() {
+        if (audioUnlocked) return;
+        const ctx = getAudioContext();
+        if (!ctx) return;
+
+        if (ctx.state === 'suspended') {
+            ctx.resume();
+        }
+
+        // 播放极短的静音，解锁浏览器的自动播放限制
+        try {
+            const buffer = ctx.createBuffer(1, 1, 22050);
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(ctx.destination);
+            if (source.start) {
+                source.start(0);
+            } else if (source.noteOn) {
+                source.noteOn(0);
+            }
+            audioUnlocked = true;
+
+            // 解锁成功后移除全局监听，避免重复触发
+            const events = ['touchstart', 'touchend', 'mousedown', 'keydown', 'click'];
+            events.forEach(evt => {
+                document.removeEventListener(evt, unlockAudio, true);
+            });
+        } catch (e) {
+            console.warn('音频解锁失败', e);
+        }
+    }
+
+    // 在文档捕获阶段绑定全局交互事件，确保任何点击或触摸都会激活音频
+    const unlockEvents = ['touchstart', 'touchend', 'mousedown', 'keydown', 'click'];
+    unlockEvents.forEach(evt => {
+        document.addEventListener(evt, unlockAudio, { capture: true, passive: true });
+    });
+
     function playSound(isCapture) {
-        if (!audioCtx) return;
-        // 确保上下文未挂起（有些浏览器在每次播放前需检查）
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
+        const ctx = getAudioContext();
+        if (!ctx) return;
+
+        // 确保播放时上下文未挂起
+        if (ctx.state === 'suspended') {
+            ctx.resume();
         }
 
         try {
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
 
             if (isCapture) {
                 osc.type = 'triangle';
-                osc.frequency.setValueAtTime(800, audioCtx.currentTime);
-                osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.15);
-                gain.gain.setValueAtTime(0.7, audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+                osc.frequency.setValueAtTime(800, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.15);
+                gain.gain.setValueAtTime(0.7, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
             } else {
                 osc.type = 'sine';
-                osc.frequency.setValueAtTime(500, audioCtx.currentTime);
-                osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.1);
-                gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                osc.frequency.setValueAtTime(500, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(150, ctx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.5, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
             }
 
             osc.connect(gain);
-            gain.connect(audioCtx.destination);
+            gain.connect(ctx.destination);
 
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.2);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.2);
         } catch (e) {
             // 静默处理音频播放失败
         }
@@ -678,8 +711,8 @@
                     div.addEventListener('pointerdown', function(e) {
                         e.preventDefault();
                         e.stopPropagation();
-                        // 关键：在用户手势中初始化音频上下文
-                        ensureAudioContext();
+                        // 确保安全解锁
+                        unlockAudio();
                         handleSquareClick(x, y);
                     });
                     div.addEventListener('click', function(e) {
@@ -702,7 +735,7 @@
                 const x = Math.round((clickX / scaleX - OFFSET) / CELL_SIZE);
                 const y = Math.round((clickY / scaleY - OFFSET) / CELL_SIZE);
                 if (x >= 0 && x < 9 && y >= 0 && y < 10) {
-                    ensureAudioContext();
+                    unlockAudio();
                     handleSquareClick(x, y);
                 }
             }
@@ -717,7 +750,7 @@
                 const x = Math.round((clickX / scaleX - OFFSET) / CELL_SIZE);
                 const y = Math.round((clickY / scaleY - OFFSET) / CELL_SIZE);
                 if (x >= 0 && x < 9 && y >= 0 && y < 10) {
-                    ensureAudioContext();
+                    unlockAudio();
                     handleSquareClick(x, y);
                 }
             }
@@ -886,7 +919,7 @@
         clearMoveHints();
         renderPieces();
 
-        // 播放音效 (此时音频上下文已经由用户手势激活)
+        // 播放音效 (此时音频上下文已经由全局手势解锁成功)
         playSound(isCapture);
 
         if (target === 'bK') {
@@ -1150,9 +1183,9 @@
         }
     });
 
-    // 顶部按钮也需要激活音频上下文（用户点击它们时）
+    // 顶部按钮也加入解锁逻辑保护
     document.querySelectorAll('button.action-btn').forEach(btn => {
-        btn.addEventListener('pointerdown', ensureAudioContext);
+        btn.addEventListener('pointerdown', unlockAudio);
     });
 </script>
 </body>
