@@ -87,6 +87,12 @@
             border: 2px solid var(--gold);
             white-space: nowrap;
             letter-spacing: 0.03em;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .level-badge:active {
+            transform: scale(0.95);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
 
         button.action-btn {
@@ -129,6 +135,8 @@
 
         .game-container {
             position: relative;
+            /* 关键修复：改为 content-box，保证内部 550x610 的空间不被 8px 的 border 挤压，从而解决棋子整体偏右的问题 */
+            box-sizing: content-box; 
             width: 550px;
             height: 610px;
             margin: 0 auto;
@@ -276,7 +284,7 @@
         }
 
         /* 弹窗 - 固定定位 */
-        #modal-overlay {
+        .modal-overlay {
             display: none;
             position: fixed;
             top: 0;
@@ -291,7 +299,7 @@
             -webkit-backdrop-filter: blur(3px);
             backdrop-filter: blur(3px);
         }
-        #modal-overlay.active {
+        .modal-overlay.active {
             display: flex;
         }
         .modal-box {
@@ -351,19 +359,48 @@
             box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
         }
 
+        /* 关卡选择面板 */
+        .level-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+            max-height: 45vh;
+            overflow-y: auto;
+            margin: 15px 0;
+            padding: 5px;
+        }
+        .level-grid-btn {
+            padding: 10px 0;
+            background: #fff;
+            border: 2px solid #d79a5a;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 16px;
+            color: #5d4037;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .level-grid-btn:hover {
+            background: #ffe082;
+        }
+        .level-grid-btn.current {
+            background: #c62828;
+            color: white;
+            border-color: #b71c1c;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+        }
+
         /* 响应式 */
         @media (max-width: 768px) {
-            body { padding: 6px 4px calc(16px + var(--safe-bottom)); }
+            body { padding: 6px 4px calc(16px + var(--safe-bottom)); justify-content: center; } /* 移动端全局垂直居中 */
             h1 { margin: 4px 0 2px; }
             .info-panel { gap: 6px 10px; margin-bottom: 4px; }
-            .game-container { border-width: 6px; border-radius: 4px; }
         }
         @media (max-width: 420px) {
             body { padding: 4px 2px calc(12px + var(--safe-bottom)); }
             h1 { font-size: clamp(18px, 5vw, 22px); }
             .info-panel { gap: 4px 8px; }
             button.action-btn { padding: 6px 10px; font-size: clamp(11px, 2.8vw, 13px); min-height: 36px; border-radius: 6px; }
-            .game-container { border-width: 5px; border-radius: 3px; }
             .modal-box { padding: 16px 14px; border-radius: 10px; }
         }
     </style>
@@ -375,7 +412,7 @@
 
     <h1>🏆 中国象棋 · 闯关教学</h1>
     <div class="info-panel">
-        <div class="level-badge" id="levelDisplay">第 1 关 (共20关)</div>
+        <div class="level-badge" id="levelDisplay" onclick="openLevelModal()" title="点击切换关卡">第 1 关 🔽</div>
         <button class="action-btn" onclick="resetCurrentLevel()" title="重新挑战本关">🔄 重新本关</button>
         <button class="action-btn" onclick="resetAllProgress()" title="清除所有进度">🏠 重新开始</button>
     </div>
@@ -388,11 +425,20 @@
         </div>
     </div>
 
-    <div id="modal-overlay">
+    <div id="game-modal" class="modal-overlay">
         <div class="modal-box">
             <div class="modal-title" id="modal-title">恭喜过关！</div>
             <div class="modal-subtitle" id="modal-subtitle"></div>
-            <button class="modal-btn" id="modal-btn" onclick="closeModal()">进入下一关</button>
+            <button class="modal-btn" id="modal-btn" onclick="closeGameModal()">进入下一关</button>
+        </div>
+    </div>
+
+    <div id="level-modal" class="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-title">选择关卡 (共50关)</div>
+            <div class="level-grid" id="levelGrid">
+                </div>
+            <button class="modal-btn" style="background: #795548;" onclick="closeLevelModal()">取 消</button>
         </div>
     </div>
 
@@ -424,7 +470,9 @@
     let selectedCell = null;
     let gameActive = true;
 
+    // 更新为 50 关
     let currentLevel = 1;
+    let maxLevels = 50;
     let searchDepth = 2;
     let aiNoise = 0;
     let showTeachingHints = true;
@@ -463,19 +511,16 @@
         });
     }
 
-    // 在文档捕获阶段绑定全局交互事件，确保任何点击或触摸都会激活音频
     const unlockEvents = ['touchstart', 'touchend', 'mousedown', 'keydown', 'click'];
     unlockEvents.forEach(evt => {
         document.addEventListener(evt, unlockAudio, { capture: true, passive: true });
     });
 
-    // 播放棋子移动/吃子真实声音
     function playSound(isCapture) {
         try {
             const audioId = isCapture ? 'audio-capture' : 'audio-move';
             const sound = document.getElementById(audioId);
             if (sound) {
-                // 每次播放前重置播放进度，允许快速连续发声
                 sound.currentTime = 0;
                 sound.play().catch(e => console.warn('音频播放被拦截:', e));
             }
@@ -507,8 +552,9 @@
         gameContainer.style.transformOrigin = 'top center';
 
         const scaledHeight = BOARD_HEIGHT_PX * scale;
-        gameWrapper.style.width = (BOARD_WIDTH_PX * scale) + 'px';
-        gameWrapper.style.height = scaledHeight + 'px';
+        // 修正外层 wrapper 尺寸，因边框已被 content-box 剥离在计算之外，需加上 16px 的边框缩放值
+        gameWrapper.style.width = ((BOARD_WIDTH_PX + 16) * scale) + 'px';
+        gameWrapper.style.height = ((BOARD_HEIGHT_PX + 16) * scale) + 'px';
 
         return scale;
     }
@@ -675,7 +721,6 @@
                     div.addEventListener('pointerdown', function(e) {
                         e.preventDefault();
                         e.stopPropagation();
-                        // 确保安全解锁
                         unlockAudio();
                         handleSquareClick(x, y);
                     });
@@ -727,10 +772,10 @@
 
     // ---- 关卡与流程 ----
     function loadProgress() {
-        let saved = localStorage.getItem('xiangqi_level_v2');
+        let saved = localStorage.getItem('xiangqi_level_v3'); // 使用新缓存key以免冲突
         if (saved) {
             currentLevel = parseInt(saved);
-            if (currentLevel > 20) currentLevel = 20;
+            if (currentLevel > maxLevels) currentLevel = maxLevels;
             if (currentLevel < 1) currentLevel = 1;
         } else {
             currentLevel = 1;
@@ -739,20 +784,26 @@
     }
 
     function saveProgress() {
-        localStorage.setItem('xiangqi_level_v2', currentLevel);
+        localStorage.setItem('xiangqi_level_v3', currentLevel);
     }
 
     function updateDifficulty() {
-        document.getElementById('levelDisplay').innerText = `第 ${currentLevel} 关 (共20关)`;
-        if (currentLevel <= 3) searchDepth = 2;
-        else if (currentLevel <= 12) searchDepth = 3;
-        else searchDepth = 4;
-        aiNoise = Math.max(0, (20 - currentLevel) * 40);
-        showTeachingHints = (currentLevel <= 3);
+        document.getElementById('levelDisplay').innerText = `第 ${currentLevel} 关 🔽`;
+        
+        // 50关难度平滑调整
+        if (currentLevel <= 10) searchDepth = 2; // 1-10关
+        else if (currentLevel <= 30) searchDepth = 3; // 11-30关
+        else searchDepth = 4; // 31-50关
+
+        // 噪音随着关卡升高而降低，第50关为0(最强)
+        aiNoise = Math.max(0, (maxLevels - currentLevel) * 20);
+        
+        // 1-10关开启教学模式
+        showTeachingHints = (currentLevel <= 10);
     }
 
     function startGame() {
-        closeModal();
+        closeGameModal();
         updateDifficulty();
         drawBoard();
         board = initBoardState();
@@ -779,20 +830,19 @@
         }
     }
 
-    function showModal(title, subtitle, btnText, callback) {
+    // ---- 弹窗控制 ----
+    function showGameModal(title, subtitle, btnText, callback) {
         document.getElementById('modal-title').innerText = title;
         document.getElementById('modal-subtitle').innerText = subtitle || '';
         const btn = document.getElementById('modal-btn');
         btn.innerText = btnText;
         modalCallback = callback;
-        document.getElementById('modal-overlay').classList.add('active');
-        document.getElementById('modal-overlay').style.display = 'flex';
+        document.getElementById('game-modal').classList.add('active');
         setTimeout(() => btn.focus(), 100);
     }
 
-    function closeModal() {
-        document.getElementById('modal-overlay').classList.remove('active');
-        document.getElementById('modal-overlay').style.display = 'none';
+    function closeGameModal() {
+        document.getElementById('game-modal').classList.remove('active');
         if (modalCallback) {
             const cb = modalCallback;
             modalCallback = null;
@@ -800,13 +850,41 @@
         }
     }
 
+    // 打开关卡选择面板
+    function openLevelModal() {
+        const grid = document.getElementById('levelGrid');
+        grid.innerHTML = '';
+        for (let i = 1; i <= maxLevels; i++) {
+            const btn = document.createElement('button');
+            btn.className = 'level-grid-btn';
+            if (i === currentLevel) btn.classList.add('current');
+            btn.innerText = i;
+            btn.onclick = () => {
+                currentLevel = i;
+                saveProgress();
+                closeLevelModal();
+                startGame();
+            };
+            grid.appendChild(btn);
+        }
+        document.getElementById('level-modal').classList.add('active');
+    }
+
+    function closeLevelModal() {
+        document.getElementById('level-modal').classList.remove('active');
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
-        const overlay = document.getElementById('modal-overlay');
-        overlay.addEventListener('click', function(e) {
-            if (e.target === overlay && modalCallback) {
-                closeModal();
-            }
+        const gameOverlay = document.getElementById('game-modal');
+        gameOverlay.addEventListener('click', function(e) {
+            if (e.target === gameOverlay && modalCallback) closeGameModal();
         });
+        
+        const levelOverlay = document.getElementById('level-modal');
+        levelOverlay.addEventListener('click', function(e) {
+            if (e.target === levelOverlay) closeLevelModal();
+        });
+
         handleResize();
     });
 
@@ -814,13 +892,13 @@
         gameActive = false;
         clearMoveHints();
         document.getElementById('status').innerText = '🎉 赢了！真棒！';
-        if (currentLevel < 20) {
+        if (currentLevel < maxLevels) {
             const prevLevel = currentLevel;
             currentLevel++;
             saveProgress();
-            showModal(`🎉 恭喜过关！`, `成功击败第 ${prevLevel} 关！准备挑战第 ${currentLevel} 关。`, '挑战下一关 ➤', startGame);
+            showGameModal(`🎉 恭喜过关！`, `成功击败第 ${prevLevel} 关！准备挑战第 ${currentLevel} 关。`, '挑战下一关 ➤', startGame);
         } else {
-            showModal(`👑 太强了！`, `您已通关最高难度第 20 关！真正的象棋大师！`, '再来一局', startGame);
+            showGameModal(`👑 太强了！`, `您已通关最高难度第 50 关！真正的象棋大师！`, '再来一局', startGame);
         }
     }
 
@@ -828,7 +906,7 @@
         gameActive = false;
         clearMoveHints();
         document.getElementById('status').innerText = '😔 被将死了...';
-        showModal(`💪 挑战失败`, `第 ${currentLevel} 关未能通过，再接再厉！`, '再试一次', startGame);
+        showGameModal(`💪 挑战失败`, `第 ${currentLevel} 关未能通过，再接再厉！`, '再试一次', startGame);
     }
 
     // ---- 交互与移动 ----
@@ -883,7 +961,6 @@
         clearMoveHints();
         renderPieces();
 
-        // 播放音效 (此时音频上下文已经由全局手势解锁成功)
         playSound(isCapture);
 
         if (target === 'bK') {
@@ -1135,11 +1212,16 @@
     };
 
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape' && selectedCell) {
-            selectedCell = null;
-            clearMoveHints();
-            renderPieces();
-            resetStatusText();
+        if (e.key === 'Escape') {
+            if (selectedCell) {
+                selectedCell = null;
+                clearMoveHints();
+                renderPieces();
+                resetStatusText();
+            } else {
+                closeLevelModal();
+                closeGameModal();
+            }
         }
         if (e.key === 'r' && e.ctrlKey) {
             e.preventDefault();
@@ -1147,8 +1229,7 @@
         }
     });
 
-    // 顶部按钮也加入解锁逻辑保护
-    document.querySelectorAll('button.action-btn').forEach(btn => {
+    document.querySelectorAll('button.action-btn, .level-badge').forEach(btn => {
         btn.addEventListener('pointerdown', unlockAudio);
     });
 </script>
